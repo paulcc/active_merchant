@@ -15,6 +15,7 @@ module ActiveMerchant #:nodoc:
         :credit => 'REFUND',
         :authorization => 'DEFERRED',
         :capture => 'RELEASE',
+        :callback => 'DIRECT3DCALLBACK',
         :void => 'VOID'
       }
       
@@ -67,8 +68,15 @@ module ActiveMerchant #:nodoc:
         add_credit_card(post, credit_card)
         add_address(post, options)
         add_customer_data(post, options)
+        add_3dsecure_request(post)
 
         commit(:purchase, post)
+      end
+      
+      def complete_3dsecure(md, pares)
+        post = {}
+        add_3dsecure_completion(post, md, pares)
+        commit(:callback, post)
       end
       
       def authorize(money, credit_card, options = {})
@@ -116,6 +124,16 @@ module ActiveMerchant #:nodoc:
       end
       
       private
+
+      def add_3dsecure_request(post)
+        add_pair(post, :Apply3DSecure, "1")
+      end
+      
+      def add_3dsecure_completion(post, md, pares)
+        add_pair(post, :MD, md)
+        add_pair(post, :PARes, pares)
+      end
+      
       def add_reference(post, identification)
         order_id, transaction_id, authorization, security_key = identification.split(';') 
         
@@ -249,6 +267,7 @@ module ActiveMerchant #:nodoc:
       
       def build_simulator_url(action)
         endpoint = [ :purchase, :authorization ].include?(action) ? "VSPDirectGateway.asp" : "VSPServerGateway.asp?Service=Vendor#{TRANSACTIONS[action].capitalize}Tx"
+        endpoint = "VSPDirectCallback.asp" if (action == :callback)
         "#{SIMULATOR_URL}/#{endpoint}"
       end
 
