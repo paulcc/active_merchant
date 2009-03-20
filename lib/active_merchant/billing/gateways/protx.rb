@@ -72,10 +72,53 @@ module ActiveMerchant #:nodoc:
 
         commit(:purchase, post)
       end
-      
-      def complete_3dsecure(md, pares)
+     
+      # the core form for 3dsecure verification requests (sent to bank)
+      def form_for_3dsecure_verification(params)
+        requires!(params, "ACSURL", "PAReq", "MD")
+        lambda do |nextstage_url,submit_element|
+          [ "<form action='" + params["ACSURL"] + "' method='post'>",
+            "<input type='hidden' name='PaReq' value='" + params["PAReq"] +"'/>",
+            "<input type='hidden' name='TermUrl' value='" + nextstage_url + "'/>",
+            "<input type='hidden' name='MD' value='" + params["MD"] + "'/>",
+            submit_element,
+            "</form>"].join 
+	end
+      end
+     
+      # form for sending 3dsecure auth results back to Protx 
+      # use 'target="_top"' if you want the confirmation to be outside any iframe
+      def form_for_3dsecure_callback(params, nextstage_url, auth_token, target_attrib = "")
+        <<EOF
+<SCRIPT LANGUAGE="Javascript"> function OnLoadEvent() { document.form.submit(); }</SCRIPT>
+<HTML>
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />
+<title>3D-Secure Redirect</title>
+</head>
+
+<body OnLoad="OnLoadEvent();">
+<form name="form" action="#{ nextstage_url }" method="POST" #{ target_attrib }>
+  <input type="hidden" name="PaRes"  value="#{ params['PaRes'] }"/>
+  <input type="hidden" name="MD"     value="#{ params['MD'] }"/>
+  <input type="hidden" name="authenticity_token" value="#{ auth_token }"/>
+  <NOSCRIPT>
+  <center><p>Please click button below to Authorise your card</p><input type="submit" value="Go"/></p></center>
+  </NOSCRIPT>
+</form>
+</body>
+</html>
+EOF
+      end
+
+      # final stage of some other transaction
+      def complete_3dsecure(params)
+        requires!(params, "PaRes", "MD", "VendorTxCode")
         post = {}
-        add_3dsecure_completion(post, md, pares)
+        add_pair(post, :MD,           params["MD"])
+        add_pair(post, :PARes,        params["PaRes"])
+        add_pair(post, :VendorTxCode, sanitize_order_id(params["VendorTxCode"]))
+      
         commit(:callback, post)
       end
       
@@ -129,11 +172,6 @@ module ActiveMerchant #:nodoc:
         add_pair(post, :Apply3DSecure, "1")
       end
       
-      def add_3dsecure_completion(post, md, pares)
-        add_pair(post, :MD, md)
-        add_pair(post, :PARes, pares)
-      end
-      
       def add_reference(post, identification)
         order_id, transaction_id, authorization, security_key = identification.split(';') 
         
@@ -171,21 +209,27 @@ module ActiveMerchant #:nodoc:
 
       def add_address(post, options)
         address = options[:billing_address] || options[:address]
-        shipping_address = options[:shipping_address] || ''
+        shipping_address = options[:shipping_address]
         
         return if address.blank?
 
-        billing = "#{address[:address1]}\n#{address[:address2]}\n#{address[:city]}\n#{address[:state]}"
-
-        add_pair(post, :BillingAddress, billing)
+        add_pair(post, :BillingSurname, address[:lastname])
+        add_pair(post, :BillingFirstnames, address[:firstnames])
+        add_pair(post, :BillingAddress1, address[:address1])
+        add_pair(post, :BillingCity, address[:city])
+        add_pair(post, :BillingState, address[:state_abbr]) unless address[:state_abbr].nil?
+        add_pair(post, :BillingCountry, address[:country])
         add_pair(post, :BillingPostcode, address[:zip])
 
-        return if shipping_address.blank?
+        return if shipping_address.nil?
 
-        shipping = "#{shipping_address[:address1]}\n#{shipping_address[:address2]}\n#{shipping_address[:city]}\n#{shipping_address[:state]}"
-
-        add_pair(post, :DeliveryAddress, shipping)
-        add_pair(post, :DeliveryPostcode, shipping_address[:zip])
+        add_pair(post, :DeliverySurname,    shipping_address[:lastname])
+        add_pair(post, :DeliveryFirstnames, shipping_address[:firstnames])
+        add_pair(post, :DeliveryAddress1,   shipping_address[:address1])
+        add_pair(post, :DeliveryCity,       shipping_address[:city])
+        add_pair(post, :DeliveryState,      shipping_address[:state_abbr]) unless shipping_address[:state_abbr].nil?
+        add_pair(post, :DeliveryCountry,    shipping_address[:country])
+        add_pair(post, :DeliveryPostcode,   shipping_address[:zip])
       end
 
       def add_invoice(post, options)
@@ -237,7 +281,6 @@ module ActiveMerchant #:nodoc:
       
       def commit(action, parameters)
         response = parse( ssl_post(url_for(action), post_data(action, parameters)) )
-          
         Response.new(response["Status"] == APPROVED, message_from(response), response,
           :test => test?,
           :authorization => authorization_from(response, parameters),
@@ -279,7 +322,7 @@ module ActiveMerchant #:nodoc:
         parameters.update(
           :Vendor => @options[:login],
           :TxType => TRANSACTIONS[action],
-          :VPSProtocol => "2.22"
+          :VPSProtocol => "2.23"
         )
         
         parameters.collect { |key, value| "#{key}=#{CGI.escape(value.to_s)}" }.join("&")
